@@ -59,6 +59,11 @@ class SyncClock {
   Iter begin();
   Iter end();
 
+#if __TSAN_EXPERIMENTAL_FENCES
+  // TODO: rework the implementation via ThreadClock
+  u16 size() { return size_; }
+#endif
+
  private:
   friend class ThreadClock;
   friend class Iter;
@@ -220,6 +225,10 @@ class ThreadClock {
 
   // Number of active elements in the clk_ table (the rest is zeros).
   uptr nclk_;
+#if __TSAN_EXPERIMENTAL_FENCES
+  // TODO: rework
+  public:
+#endif
   u64 clk_[kMaxTidInClock];  // Fixed size vector clock.
 
   bool IsAlreadyAcquired(const SyncClock *src) const;

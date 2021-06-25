@@ -527,12 +527,79 @@ void ReleaseStoreImpl(ThreadState *thr, uptr pc, SyncClock *c) {
 void AcquireReleaseImpl(ThreadState *thr, uptr pc, SyncClock *c) {
   if (thr->ignore_sync)
     return;
+
   thr->clock.set(thr->fast_state.epoch());
   thr->fast_synch_epoch = thr->fast_state.epoch();
   thr->clock.acq_rel(&thr->proc()->clock_cache, c);
+
+#if __TSAN_EXPERIMENTAL_FENCES
+  // TODO: add acquire fence clock update
+
+  // Update the fence clock to be available for relaxed loads
+  // TODO: avoid when no explicit fences
+  thr->fence_clock_release.Resize(&thr->proc()->clock_cache, thr->clock.size());
+  u64 *src_pos = &thr->clock.clk_[0];
+  for (ClockElem &dst_elem : thr->fence_clock_release) {
+    u64 epoch = *src_pos;
+    if (dst_elem.epoch < epoch) {
+      dst_elem.epoch = epoch;
+    }
+    src_pos++;
+  }
+#endif
+
   StatInc(thr, StatSyncAcquire);
   StatInc(thr, StatSyncRelease);
 }
+
+#if __TSAN_EXPERIMENTAL_FENCES
+void AtomicFenceImplLoad(ThreadState *thr, uptr pc, SyncClock* src) {
+  // The relaxed load brought the implicit clock. So, update the acquire clock.
+  thr->fence_clock_acquire.Resize(&thr->proc()->clock_cache, src->size());
+
+  auto dst = thr->fence_clock_acquire.begin();
+  for (ClockElem &src_elem : *src) {
+    u64 epoch = src_elem.epoch;
+    if ((*dst).epoch < epoch) {
+      (*dst).epoch = epoch;
+    }
+    ++dst;
+  }
+}
+
+void AtomicFenceImplStore(ThreadState *thr, uptr pc, SyncClock* dst) {
+  // The release fence clock is propagated into sync clock
+  dst->Resize(&thr->proc()->clock_cache, thr->fence_clock_release.size());
+
+  auto src = thr->fence_clock_release.begin();
+  for (ClockElem &dst_elem : *dst) {
+    u64 epoch = (*src).epoch;
+    if (dst_elem.epoch < epoch) {
+      dst_elem.epoch = epoch;
+    }
+    ++src;
+  }
+}
+
+void AtomicFenceImplRMW(ThreadState *thr, uptr pc, SyncClock* src_dst) {
+  AtomicFenceImplLoad(thr, pc, src_dst);
+  AtomicFenceImplStore(thr, pc, src_dst);
+}
+
+void AtomicFenceAcquireImpl(ThreadState *thr, uptr pc) {
+  if (thr->ignore_sync)
+    return;
+  thr->clock.set(thr->fast_state.epoch());
+  thr->clock.acquire(&thr->proc()->clock_cache, &thr->fence_clock_acquire);
+}
+void AtomicFenceReleaseImpl(ThreadState *thr, uptr pc) {
+ if (thr->ignore_sync)
+    return;
+  thr->clock.set(thr->fast_state.epoch());
+  thr->fast_synch_epoch = thr->fast_state.epoch();
+  thr->clock.release(&thr->proc()->clock_cache, &thr->fence_clock_release);
+}
+#endif
 
 void ReportDeadlock(ThreadState *thr, uptr pc, DDReport *r) {
   if (r == 0 || !ShouldReport(thr, ReportTypeDeadlock))

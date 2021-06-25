@@ -438,6 +438,12 @@ struct ThreadState {
   ThreadClock last_sleep_clock;
 #endif
 
+#if __TSAN_EXPERIMENTAL_FENCES
+  // TODO: consider using ThreadClock
+  SyncClock fence_clock_acquire;
+  SyncClock fence_clock_release;
+#endif
+
   // Set in regions of runtime that must be signal-safe and fork-safe.
   // If set, malloc must not be called.
   int nomalloc;

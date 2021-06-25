@@ -65,6 +65,11 @@ struct SyncVar {
   // with the mtx. This reduces contention for hot sync objects.
   SyncClock clock;
 
+#if __TSAN_EXPERIMENTAL_FENCES
+  // Carriers implicit clock of fences
+  SyncClock fence_clock;
+#endif
+
   void Init(ThreadState *thr, uptr pc, uptr addr, u64 uid);
   void Reset(Processor *proc);
 

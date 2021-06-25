@@ -35,6 +35,11 @@
 # endif
 #endif
 
+#ifndef __TSAN_EXPERIMENTAL_FENCES
+#define __TSAN_EXPERIMENTAL_FENCES 1
+#endif
+
+
 namespace __tsan {
 
 const int kClkBits = 42;

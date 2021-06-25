@@ -218,12 +218,27 @@ static a128 NoTsanAtomicLoad(const volatile a128 *a, morder mo) {
 }
 #endif
 
+#if __TSAN_EXPERIMENTAL_FENCES
+namespace __tsan {
+  void AtomicFenceImplLoad(ThreadState *thr, uptr pc, SyncClock* c);
+  void AtomicFenceImplRMW(ThreadState *thr, uptr pc, SyncClock* c);
+}
+#endif
+
 template<typename T>
 static T AtomicLoad(ThreadState *thr, uptr pc, const volatile T *a, morder mo) {
   CHECK(IsLoadOrder(mo));
   // This fast-path is critical for performance.
   // Assume the access is atomic.
   if (!IsAcquireOrder(mo)) {
+#if __TSAN_EXPERIMENTAL_FENCES
+    // TODO: avoid fence logic if no fences
+    SyncVar *s = ctx->metamap.GetIfExistsAndLock((uptr)a, false);
+    if (s) {
+      AtomicFenceImplLoad(thr, pc, &s->fence_clock);
+      s->mtx.ReadUnlock();
+    }
+#endif
     MemoryReadAtomic(thr, pc, (uptr)a, SizeLog<T>());
     return NoTsanAtomicLoad(a, mo);
   }
@@ -281,6 +296,7 @@ template<typename T, T (*F)(volatile T *v, T op)>
 static T AtomicRMW(ThreadState *thr, uptr pc, volatile T *a, T v, morder mo) {
   MemoryWriteAtomic(thr, pc, (uptr)a, SizeLog<T>());
   SyncVar *s = 0;
+
   if (mo != mo_relaxed) {
     s = ctx->metamap.GetOrCreateAndLock(thr, pc, (uptr)a, true);
     thr->fast_state.IncrementEpoch();
@@ -292,7 +308,17 @@ static T AtomicRMW(ThreadState *thr, uptr pc, volatile T *a, T v, morder mo) {
       ReleaseImpl(thr, pc, &s->clock);
     else if (IsAcquireOrder(mo))
       AcquireImpl(thr, pc, &s->clock);
+#if __TSAN_EXPERIMENTAL_FENCES
+    AtomicFenceImplRMW(thr, pc, &s->fence_clock);
+#endif
   }
+#if __TSAN_EXPERIMENTAL_FENCES
+  else {
+    s = ctx->metamap.GetOrCreateAndLock(thr, pc, (uptr)a, true);
+    AtomicFenceImplRMW(thr, pc, &s->fence_clock);
+  }
+#endif
+
   v = F(a, v);
   if (s)
     s->mtx.Unlock();
@@ -451,12 +477,46 @@ static T AtomicCAS(ThreadState *thr, uptr pc,
 }
 
 #if !SANITIZER_GO
+
+#if __TSAN_EXPERIMENTAL_FENCES
+
+namespace __tsan {
+  void AtomicFenceAcquireImpl(ThreadState *thr, uptr pc);
+  void AtomicFenceReleaseImpl(ThreadState *thr, uptr pc);
+}
+
+static void AtomicFenceAcquire(ThreadState *thr, uptr pc) {
+    AtomicFenceAcquireImpl(thr, pc);
+}
+
+static void AtomicFenceRelease(ThreadState *thr, uptr pc) {
+  thr->fast_state.IncrementEpoch();
+  // Can't increment epoch w/o writing to the trace as well.
+  // TODO: What we are tracing?
+  TraceAddEvent(thr, thr->fast_state, EventTypeMop, 0);
+  AtomicFenceReleaseImpl(thr, pc);
+}
+
+static void AtomicFenceImpl(ThreadState *thr, uptr pc, morder mo) {
+  if (IsAcquireOrder(mo)) {
+    AtomicFenceAcquire(thr, pc);
+  }
+  if (IsReleaseOrder(mo)) {
+    AtomicFenceRelease(thr, pc);
+  }
+}
+
+#endif
+
 static void NoTsanAtomicFence(morder mo) {
   __sync_synchronize();
 }
 
 static void AtomicFence(ThreadState *thr, uptr pc, morder mo) {
   // FIXME(dvyukov): not implemented.
+#if __TSAN_EXPERIMENTAL_FENCES
+  AtomicFenceImpl(thr, pc, mo);
+#endif
   __sync_synchronize();
 }
 #endif

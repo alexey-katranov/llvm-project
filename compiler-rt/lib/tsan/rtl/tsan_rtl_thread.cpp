@@ -148,6 +148,11 @@ void ThreadContext::OnFinished() {
 #if !SANITIZER_GO
   PlatformCleanUpThreadState(thr);
 #endif
+
+#if __TSAN_EXPERIMENTAL_FENCES
+  thr->fence_clock_acquire.Reset(&thr->proc()->clock_cache);
+  thr->fence_clock_release.Reset(&thr->proc()->clock_cache);
+#endif
   thr->~ThreadState();
 #if TSAN_COLLECT_STATS
   StatAggregate(ctx->stat, thr->stat);
